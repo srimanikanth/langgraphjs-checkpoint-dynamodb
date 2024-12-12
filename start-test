@@ -1,0 +1,139 @@
+import { v4 as uuidv4 } from 'uuid';
+import { Logger } from 'some-logger-package'; // Replace with your actual logger import
+import { ConversationAgent } from './conversational-agent';
+import { DynamoDBSaver } from '../services/checkpoint-dynamodb/saver'; // Adjust path as needed
+
+// Create a concrete class for testing since ConversationAgent is abstract
+class TestConversationAgent extends ConversationAgent {
+  constructor(memory?: DynamoDBSaver, logger?: Logger) {
+    super();
+    if (memory) this.memory = memory;
+    if (logger) this.logger = logger;
+  }
+
+  // Mock out the graph builder method
+  protected async graphBuilder() {
+    return {
+      updateState: jest.fn(),
+      invoke: jest.fn(),
+      getState: jest.fn(),
+    };
+  }
+}
+
+describe('ConversationAgent.start', () => {
+  let agent: TestConversationAgent;
+  let mockGraph: any;
+
+  beforeEach(async () => {
+    agent = new TestConversationAgent();
+    mockGraph = {
+      updateState: jest.fn(),
+      invoke: jest.fn(),
+      getState: jest.fn(),
+    };
+    jest.spyOn(agent as any, 'graphBuilder').mockResolvedValue(mockGraph);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('should call graphBuilder if graph is null', async () => {
+    expect((agent as any).graph).toBeNull();
+    await agent.start();
+    expect((agent as any).graphBuilder).toHaveBeenCalled();
+    expect((agent as any).graph).toBe(mockGraph);
+  });
+
+  it('should create a new conversation ID and invoke the graph', async () => {
+    // Mock return values
+    const fakeConversationId = 'test-conversation-id';
+    jest.spyOn(uuidv4, 'call').mockReturnValue(fakeConversationId);
+
+    const fakeInvokeResult = {
+      messages: ['Hello World'],
+    };
+    mockGraph.invoke.mockResolvedValue(fakeInvokeResult);
+
+    const result = await agent.start();
+    expect(mockGraph.invoke).toHaveBeenCalledWith('', fakeConversationId);
+
+    // The result should return something related to the last message
+    expect(result).toEqual({
+      result: 'Hello World',
+      messages: ['Hello World'],
+      conversationID: fakeConversationId,
+    });
+  });
+
+  it('should update the state with provided entities before invoking the graph', async () => {
+    const entities = [{ type: 'user', name: 'John Doe' }];
+    const fakeConversationId = 'conversation-with-entities';
+    jest.spyOn(uuidv4, 'call').mockReturnValue(fakeConversationId);
+
+    const fakeInvokeResult = {
+      messages: ['Entities processed.'],
+    };
+    mockGraph.invoke.mockResolvedValue(fakeInvokeResult);
+
+    await agent.start(undefined, entities);
+
+    // Check if updateState was called
+    expect(mockGraph.updateState).toHaveBeenCalledWith(fakeConversationId, { messages: entities });
+    // Ensure invoke is still called after updating state
+    expect(mockGraph.invoke).toHaveBeenCalledWith('', fakeConversationId);
+  });
+
+  it('should retrieve the state and return the latest state value if present', async () => {
+    const fakeConversationId = 'conversation-with-state';
+    jest.spyOn(uuidv4, 'call').mockReturnValue(fakeConversationId);
+
+    const fakeInvokeResult = {
+      messages: ['State obtained.'],
+    };
+    const fakeState = {
+      values: { someKey: 'someStateValue' },
+    };
+    mockGraph.invoke.mockResolvedValue(fakeInvokeResult);
+    mockGraph.getState.mockReturnValue(fakeState);
+
+    const result = await agent.start();
+    expect(mockGraph.getState).toHaveBeenCalledWith(fakeConversationId);
+    // The code extracts the first key of values and returns that value.
+    expect(result).toEqual({
+      result: 'someStateValue',
+      messages: ['State obtained.'],
+      conversationID: fakeConversationId,
+    });
+  });
+
+  it('should throw an error if state values are undefined or null', async () => {
+    const fakeConversationId = 'conversation-without-values';
+    jest.spyOn(uuidv4, 'call').mockReturnValue(fakeConversationId);
+
+    mockGraph.invoke.mockResolvedValue({ messages: ['Missing state'] });
+    mockGraph.getState.mockReturnValue({ values: null });
+
+    await expect(agent.start()).rejects.toThrow('State values are undefined or null');
+  });
+
+  it('should log the result from Start Graph', async () => {
+    const fakeConversationId = 'conversation-logging';
+    jest.spyOn(uuidv4, 'call').mockReturnValue(fakeConversationId);
+
+    const fakeInvokeResult = {
+      messages: ['Logged message'],
+    };
+    mockGraph.invoke.mockResolvedValue(fakeInvokeResult);
+
+    const loggerSpy = jest.spyOn(agent.logger, 'info');
+
+    await agent.start();
+
+    expect(loggerSpy).toHaveBeenCalledWith(
+      { functionName: 'Result from Start Graph', result: fakeInvokeResult },
+      expect.anything()
+    );
+  });
+});
