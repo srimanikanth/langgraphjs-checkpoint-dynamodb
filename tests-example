@@ -1,0 +1,215 @@
+// __tests__/conversational-agent.test.ts
+import { v4 as uuidv4 } from 'uuid';
+import { ConversationalAgent } from '../conversational-agent'; // adjust path as needed
+
+// We will define a concrete subclass for testing since graphBuilder is abstract.
+class TestConversationalAgent extends ConversationalAgent {
+  // Mock graphBuilder to return a mocked graph object
+  async graphBuilder(): Promise<any> {
+    return this.mockGraph;
+  }
+
+  public mockGraph: {
+    invoke: jest.Mock;
+    updateState: jest.Mock;
+    getState: jest.Mock;
+    drawMermaidPng?: jest.Mock;
+    arrayBuffer?: jest.Mock;
+    getGraph?: jest.Mock;
+  } = {
+    invoke: jest.fn(),
+    updateState: jest.fn(),
+    getState: jest.fn(),
+    // If needed for saving graph images
+    drawMermaidPng: jest.fn(() => Promise.resolve({ arrayBuffer: jest.fn() })),
+    getGraph: jest.fn(),
+  };
+
+  public logger = {
+    info: jest.fn(),
+    error: jest.fn(),
+  };
+
+  public memory = {
+    save: jest.fn(),
+    load: jest.fn(),
+  };
+}
+
+describe('ConversationalAgent', () => {
+  let agent: TestConversationalAgent;
+
+  beforeEach(() => {
+    agent = new TestConversationalAgent();
+    // Reset mocks before each test
+    agent.mockGraph.invoke.mockReset();
+    agent.mockGraph.updateState.mockReset();
+    agent.mockGraph.getState.mockReset();
+    agent.logger.info.mockReset();
+    agent.logger.error.mockReset();
+  });
+
+  describe('start()', () => {
+    it('should start a new conversation, set entities, invoke the graph, and return the result', async () => {
+      const conversationID = 'test-convo-id';
+      // Mock UUID if necessary
+      jest.spyOn(uuidv4, 'call').mockReturnValueOnce(conversationID);
+
+      const input = 'Hello';
+      const entities = [{ name: 'user', role: 'customer' }];
+
+      // Mock graphBuilder return
+      agent.mockGraph.getState.mockResolvedValueOnce({ values: { messages: ['Initial Message'] } });
+      agent.mockGraph.invoke.mockResolvedValueOnce({
+        messages: ['Initial Message', 'Response Message'],
+      });
+
+      const result = await agent.start(input, entities);
+
+      expect(agent.logger.info).toHaveBeenCalledWith(
+        { functionName: 'Set static entities in the graph' },
+        entities
+      );
+
+      expect(agent.mockGraph.updateState).toHaveBeenCalledWith(
+        { configurable: { conversation_id: conversationID } },
+        { messages: entities }
+      );
+      expect(agent.mockGraph.invoke).toHaveBeenCalledWith(
+        '',
+        { configurable: { conversation_id: conversationID } }
+      );
+
+      expect(result).toEqual({
+        result: 'Response Message',
+        conversationID: conversationID,
+      });
+    });
+
+    it('should throw an error if state values are undefined', async () => {
+      agent.mockGraph.invoke.mockResolvedValueOnce(null);
+
+      await expect(agent.start('Hello', [])).rejects.toThrow(
+        'State values are undefined or null!'
+      );
+    });
+  });
+
+  describe('resume()', () => {
+    it('should resume an existing conversation, update state, invoke the graph, and return the result', async () => {
+      const conversationID = 'existing-convo-id';
+      const input = 'Next input';
+
+      // Mock existing state
+      agent.mockGraph.getState.mockResolvedValueOnce({
+        values: {
+          messages: ['Previous Message'],
+        },
+      });
+
+      agent.mockGraph.invoke.mockResolvedValueOnce({
+        messages: ['Previous Message', 'New Response'],
+      });
+
+      const result = await agent.resume(conversationID, input);
+
+      expect(agent.logger.info).toHaveBeenCalledWith(
+        { functionName: 'Get updated lastState' },
+        'Previous Message'
+      );
+
+      expect(agent.mockGraph.updateState).toHaveBeenCalledWith(
+        { configurable: { conversation_id: conversationID } },
+        { messages: [{ Previous: 'Input', Input: input }] }
+      );
+
+      expect(agent.mockGraph.invoke).toHaveBeenCalledWith(
+        null,
+        { configurable: { conversation_id: conversationID } }
+      );
+      expect(result).toEqual({
+        result: 'New Response',
+        conversationID,
+      });
+    });
+
+    it('should throw an error if updated state values are undefined', async () => {
+      const conversationID = 'existing-convo-id';
+
+      agent.mockGraph.getState.mockResolvedValueOnce({
+        values: null,
+      });
+
+      await expect(agent.resume(conversationID, 'Hello')).rejects.toThrow(
+        'Updated state values are undefined or null!'
+      );
+    });
+  });
+
+  describe('execute()', () => {
+    it('should resume if conversationID is provided', async () => {
+      const spyResume = jest.spyOn(agent, 'resume').mockResolvedValue({
+        result: 'Resumed response',
+        conversationID: 'some-id',
+      });
+      const spyStart = jest.spyOn(agent, 'start').mockResolvedValue({
+        result: 'Started response',
+        conversationID: 'some-id',
+      });
+
+      const result = await agent.execute('Some input', 'some-id', []);
+
+      expect(spyResume).toHaveBeenCalledWith('some-id', 'Some input');
+      expect(spyStart).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        result: 'Resumed response',
+        conversationID: 'some-id',
+      });
+    });
+
+    it('should start if no conversationID is provided', async () => {
+      const spyResume = jest.spyOn(agent, 'resume');
+      const spyStart = jest.spyOn(agent, 'start').mockResolvedValue({
+        result: 'Started response',
+        conversationID: 'new-id',
+      });
+
+      const result = await agent.execute('New input', undefined, [{ entity: 'test' }]);
+
+      expect(spyResume).not.toHaveBeenCalled();
+      expect(spyStart).toHaveBeenCalledWith('New input', [{ entity: 'test' }]);
+      expect(result).toEqual({
+        result: 'Started response',
+        conversationID: 'new-id',
+      });
+    });
+  });
+
+  describe('saveGraphImage()', () => {
+    // Example test if you want to verify saving a graph image
+    it('should save the graph image', async () => {
+      // Mock the image arrayBuffer
+      const fakeArrayBuffer = Buffer.from('fake-image-buffer');
+      agent.mockGraph.drawMermaidPng = jest.fn().mockResolvedValue({
+        arrayBuffer: jest.fn().mockResolvedValue(fakeArrayBuffer),
+      });
+
+      const fs = require('fs');
+      const writeFileSpy = jest.spyOn(fs, 'writeFile').mockImplementation((_, __, cb) => cb(null));
+
+      await agent.saveGraphImage('test.png');
+
+      expect(agent.mockGraph.drawMermaidPng).toHaveBeenCalled();
+      expect(writeFileSpy).toHaveBeenCalled();
+      // You could also check the logger calls, etc.
+    });
+  });
+
+  describe('createAnnotation()', () => {
+    it('should create a new annotation', () => {
+      const annotation = agent.createAnnotation();
+      expect(annotation).toBeDefined();
+      // Depending on the logic in createAnnotation, add more assertions as needed.
+    });
+  });
+});
