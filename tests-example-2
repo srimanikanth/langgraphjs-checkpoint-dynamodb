@@ -1,0 +1,114 @@
+import { ConversationalAgent } from './conversational-agent';
+import { v4 as uuidv4 } from 'uuid';
+
+jest.mock('uuid', () => ({
+  v4: jest.fn(() => 'mocked-uuid'),
+}));
+
+describe('ConversationalAgent', () => {
+  let agent: ConversationalAgent;
+  let mockGraph: any;
+  let mockLogger: any;
+
+  beforeEach(() => {
+    mockGraph = {
+      updateState: jest.fn(),
+      getState: jest.fn(),
+      invoke: jest.fn(),
+      getPng: jest.fn().mockResolvedValue(Buffer.from('image-data')),
+    };
+    mockLogger = {
+      info: jest.fn(),
+      error: jest.fn(),
+    };
+
+    agent = new (class extends ConversationalAgent {
+      protected async graphBuilder() {
+        return mockGraph;
+      }
+    })();
+
+    (agent as any).logger = mockLogger;
+  });
+
+  describe('start', () => {
+    it('should start a new conversation and return the result', async () => {
+      const input = { message: 'Hello' };
+      const entities = [{ entity: 'example' }];
+      const resultMock = { messages: ['response-message'] };
+
+      mockGraph.invoke.mockResolvedValue(resultMock);
+
+      const result = await agent.start(input, entities);
+
+      expect(mockGraph.updateState).toHaveBeenCalledWith(
+        { configurable: { conversation_id: 'mocked-uuid' } },
+        { messages: entities },
+      );
+      expect(mockGraph.invoke).toHaveBeenCalledWith('', { configurable: { conversation_id: 'mocked-uuid' } });
+      expect(result).toEqual({
+        result: 'response-message',
+        conversationID: 'mocked-uuid',
+      });
+    });
+  });
+
+  describe('resume', () => {
+    it('should resume a conversation and return the updated state', async () => {
+      const conversationID = 'test-convo-id';
+      const input = { message: 'Resume this' };
+      const stateMock = { values: { messages: ['prev-message', 'new-message'] } };
+
+      mockGraph.getState.mockResolvedValue(stateMock);
+
+      const result = await agent.resume(conversationID, input);
+
+      expect(mockGraph.getState).toHaveBeenCalledWith({ configurable: { conversation_id: conversationID } });
+      expect(result).toEqual({
+        result: 'new-message',
+        conversationID: conversationID,
+      });
+    });
+
+    it('should throw an error if state values are undefined', async () => {
+      const conversationID = 'test-convo-id';
+      mockGraph.getState.mockResolvedValue(null);
+
+      await expect(agent.resume(conversationID, {})).rejects.toThrow('State values are undefined or null');
+    });
+  });
+
+  describe('saveGraphImage', () => {
+    it('should save the graph image as PNG', async () => {
+      const fileName = 'graph.png';
+      const fs = require('fs');
+      jest.spyOn(fs, 'writeFile').mockImplementation((_, __, cb) => cb(null));
+
+      await agent.saveGraphImage(fileName);
+
+      expect(mockGraph.getPng).toHaveBeenCalled();
+      expect(fs.writeFile).toHaveBeenCalledWith(fileName, Buffer.from('image-data'), expect.any(Function));
+      expect(mockLogger.info).toHaveBeenCalledWith('Image saved successfully as png', fileName);
+    });
+
+    it('should log an error if saving the image fails', async () => {
+      const fileName = 'graph.png';
+      const fs = require('fs');
+      jest.spyOn(fs, 'writeFile').mockImplementation((_, __, cb) => cb(new Error('Failed to save')));
+
+      await agent.saveGraphImage(fileName);
+
+      expect(mockLogger.error).toHaveBeenCalledWith('Error saving the image:', new Error('Failed to save'));
+    });
+  });
+
+  describe('createAnnotation', () => {
+    it('should create a new annotation object', () => {
+      const annotation = ConversationalAgent.createAnnotation();
+      const action = annotation.reducer([], [1]);
+
+      expect(action).toEqual([1]);
+      expect(annotation.default).toEqual([]);
+    });
+  });
+});
